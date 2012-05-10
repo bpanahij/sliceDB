@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html>
+
+  <head>
+    <meta charset='utf-8' />
+    <meta http-equiv="X-UA-Compatible" content="chrome=1" />
+    <meta name="description" content="SliceDB : relational database slicer and naming convention" />
+
+    <link rel="stylesheet" type="text/css" media="screen" href="stylesheets/stylesheet.css">
+
+    <title>SliceDB</title>
+  </head>
+
+  <body>
+
+    <!-- HEADER -->
+    <div id="header_wrap" class="outer">
+        <header class="inner">
+          <a id="forkme_banner" href="https://github.com/bpanahij/sliceDB">View on GitHub</a>
+
+          <h1 id="project_title">SliceDB</h1>
+          <h2 id="project_tagline">relational database slicer and naming convention</h2>
+
+            <section id="downloads">
+              <a class="zip_download_link" href="https://github.com/bpanahij/sliceDB/zipball/master">Download this project as a .zip file</a>
+              <a class="tar_download_link" href="https://github.com/bpanahij/sliceDB/tarball/master">Download this project as a tar.gz file</a>
+            </section>
+        </header>
+    </div>
+
+    <!-- MAIN CONTENT -->
+    <div id="main_content_wrap" class="outer">
+      <section id="main_content" class="inner">
+        <h3>SliceDB</h3>
+
+<blockquote>
+<p>Written By Brian Johnson</p>
+</blockquote>
+
+<ul>
+<li>This script uses table names and column names to build a</li>
+<li>dependency hash array. The dependency hash array connects</li>
+<li>each table to all of it's relational siblings, parents,</li>
+<li>uncles, children, nephews, and so on and so on, into</li>
+<li><p>infinity or when the data ends, whichever comes first.</p></li>
+<li><p>Arrays at the head of the script determine special cases</p></li>
+<li><p>are handled.</p></li>
+<li><p>$ignore_tables - tables that are not backed up</p></li>
+<li><p>$tablesIgnore - tables whose rows are not relationally linked in some scenarios (not backed up in some cases)</p></li>
+<li><p>$date_backup - tables that should be backed up by the date specified NOTE: this is the catalyst</p></li>
+<li><p>$straight_backup_table - tables to backup in their entirety</p></li>
+<li><p>$special_tables - tables that have variable parent/child relationships</p></li>
+<li><p>$anc_exceptions - tables twhose ancestry should be ignired, they are handled with either special cases or perhaps some other method of backup</p></li>
+<li><p>Special Cases where relation is only followed if the secondsary table is in the array on the right.</p></li>
+<li><p>i.e. $tablesIgnore['USER_USER'] = array('USRP_USER_PASSWORD');</p></li>
+<li><p>This line tells the script to not backup records linked to on the right, left, or under USER_USER,</p></li>
+<li><p>unless it is in the USRP_USER_PASSWORD table.</p></li>
+<li><p>In the case of USER_USER this is done to prevent large unintended backup swaths</p></li>
+<li><p>...because some users have touched every app, and without this line the script would crawl</p></li>
+<li><p>through almost every app....</p></li>
+</ul>
+      </section>
+    </div>
+
+    <!-- FOOTER  -->
+    <div id="footer_wrap" class="outer">
+      <footer class="inner">
+        <p class="copyright">SliceDB maintained by <a href="https://github.com/bpanahij">bpanahij</a></p>
+        <p>Published with <a href="http://pages.github.com">GitHub Pages</a></p>
+      </footer>
+    </div>
+
+    
+
+  </body>
+</html>
