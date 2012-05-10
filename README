@@ -1,0 +1,51 @@
+/* Written By Brian Johnson
+* ==============================================================
+* This script uses table names and column names to build a
+* dependency hash array. The dependency hash array connects
+* each table to all of it's relational siblings, parents,
+* uncles, children, nephews, and so on and so on, into
+* infinity or when the data ends, whichever comes first.
+*
+* Arrays at the head of the script determine special cases
+* are handled.
+*
+* $ignore_tables - tables that are not backed up
+* $tablesIgnore - tables whose rows are not relationally linked in some scenarios (not backed up in some cases)
+* $date_backup - tables that should be backed up by the date specified NOTE: this is the catalyst
+* $straight_backup_table - tables to backup in their entirety
+* $special_tables - tables that have variable parent/child relationships
+* $anc_exceptions - tables twhose ancestry should be ignired, they are handled with either special cases or perhaps some other method of backup
+*
+*/
+
+/* ===============================
+* Special Cases where relation is only followed if the secondsary table is in the array on the right.
+*
+* i.e. $tablesIgnore['USER_USER'] = array('USRP_USER_PASSWORD');
+*  This line tells the script to not backup records linked to on the right, left, or under USER_USER,
+*  unless it is in the USRP_USER_PASSWORD table.
+*
+*  In the case of USER_USER this is done to prevent large unintended backup swaths
+*  ...because some users have touched every app, and without this line the script would crawl
+*  through almost every app....
+*
+*/
+/* ===========================================================
+* Connection Information:
+* ===========================================================
+* The script connects to two databases ( a source and destination )
+* these and the relevant database names are selected below
+*/
+/* ============================================================
+* CREATE DEPENDENCIES
+* ============================================================
+* First, create table dependencies for the entire DB by
+* describing each table and searching for namespace matches.
+* i.e. APPL_APPS_ID ==> APPS_ID (Joining the APPL_APP table and the APPS_APP_STATUS table)
+*
+* special cases must be defined above...i.e. when a table has unlike syntax to out standard
+
+/* ===========================================================
+* 1. Get table descriptions
+* 2. use those descriptions in getDependencies function
+*/

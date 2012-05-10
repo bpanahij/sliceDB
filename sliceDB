@@ -1,0 +1,782 @@
+#!/usr/bin/php -q
+<?php
+/* Written By Brian Johnson
+ * ==============================================================
+ * This script uses table names and column names to build a
+ * dependency hash array. The dependency hash array connects
+ * each table to all of it's relational siblings, parents,
+ * uncles, children, nephews, and so on and so on, into
+ * infinity or when the data ends, whichever comes first.
+ *
+ * Arrays at the head of the script determine special cases
+ * are handled.
+ *
+ * $ignore_tables - tables that are not backed up
+ * $tablesIgnore - tables whose rows are not relationally linked in some scenarios (not backed up in some cases)
+ * $date_backup - tables that should be backed up by the date specified NOTE: this is the catalyst
+ * $straight_backup_table - tables to backup in their entirety
+ * $special_tables - tables that have variable parent/child relationships
+ * $anc_exceptions - tables twhose ancestry should be ignired, they are handled with either special cases or perhaps some other method of backup
+ *
+ */
+
+/* ===============================
+ * Special Cases where relation is only followed if the secondsary table is in the array on the right.
+ *
+ * i.e. $tablesIgnore['USER_USER'] = array('USRP_USER_PASSWORD');
+ *  This line tells the script to not backup records linked to on the right, left, or under USER_USER,
+ *  unless it is in the USRP_USER_PASSWORD table.
+ *
+ *  In the case of USER_USER this is done to prevent large unintended backup swaths
+ *  ...because some users have touched every app, and without this line the script would crawl
+ *  through almost every app....
+ *
+ */
+$header = "==============================================================
+                   __   ___ 
+  __  /7() __  __ /  \ / o.)
+ (c' ///7,',','o// o |/ o \ 
+/__)//// \_\ |_(/__,'/___,' 
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+-'It's climbing in your windows,
+slicing your DBs up.
+Hide your kids, hide your wives,
+and hide your husbands,
+cause its slicing everybody up here!'
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+=============================================================\n";
+$ignore_tables = array(
+    'IGNORE_THIS_TABLE'
+                       );
+
+$tablesIgnore = array();
+$tablesIgnore['TABLE1_TABLE'] = array('RELATIONAL_LINK_IGNORE');
+$tablesIgnore['TABLE2_TABLE_TWO'] = array('NONE');
+
+$date_backup = array(
+            'TABLE3_TABLE_THREE' => 'TABLE3_DATE',
+        );
+
+$straight_backup_tables = array(
+    'STRAIGHT_BACKUP_TABLE'            
+    );
+
+$special_tables = array(
+            'NOTP_NOTE_PARENT' => array('NOTP_PARENT_TABLE', 'NOTP_PARENT_ID'),
+        );
+
+$anc_exceptions = array('NOTP_NOTE_PARENT', 'TSKP_TASK_PARENT', 'TEMP_TSKP_PARENT');
+
+$savedDependency = array();
+
+error_reporting(0);
+
+$shortopts  = "";
+$shortopts .= "s:";  // Source url
+$shortopts .= "d:";  // Destination url
+$shortopts .= "t:";  // Key table
+$shortopts .= "w:";  // where clause for key table
+$shortopts .= "h";
+
+$longopts = "";
+$longopts = array(
+    "startdate::", //Optional Start Date
+    "enddate::", //Optional End Date
+    "su:", //Source user
+    "sp:", //Source password
+    "du:", //Destination user
+    "dp:", //Destination passwrod
+    "sdb:", //Source DB
+    "ddb:", //Destination DB
+    "skip", //skip straight backup of tables in $straight_backup_tables array.
+    "tables"
+);
+
+$options = getopt($shortopts, $longopts);
+
+$optOptions = array (
+    "startdate" => "Optional Start Date for backup by date",
+    "enddate" => "Optional End Date for backup by date",
+    "skip" => "Skip full backup [use --straight to list full tables.]",
+    "w" => "Where clause for Key table",
+    "h" => "Display this help",
+    "tables" => "List all tables treated special!"
+);
+$reqOptions = array (
+    "s" => "* Source DB url",
+    "d" => "* Destination DB url",
+    "t" => "* Table to key backup from",
+    "w" => "* Where clause for Key-Table",
+    "su" => "* Source DB username",
+    "sp" => "* Source DB password",
+    "du" => "* Destination DB username",
+    "dp" => "* Destination DB password",
+    "sdb" => "* Source DB",
+    "ddb" => "* Destination DB"
+);
+
+if(in_array("h",array_keys($options))) {
+    $usage = $header;
+    $usage .= "Instructions for using ".$argv[0].":\n";
+    $usage .= "Command:\n\t".$argv[0]." -s 127.0.0.1:3306 --su root --sp myPassword --sdb sourceDB /\n".
+        "\t\t-d 127.0.0.1:3306 --du root --dp myPassword --ddb destinationDB /\n".
+        "\t\t -t PRIMARY_TABLE -w 'PRIMARY_ID = 123456'\n";
+    $usage .= "Option Definitions:\n";
+    foreach($reqOptions as $opt => $desc) {
+        $usage .= "\t\t".(strlen($opt)>1 ? "--$opt" : "-$opt")." $desc\n";
+    }
+    foreach($optOptions as $opt => $desc) {
+        $usage .= "\t\t".(strlen($opt)>1 ? "--$opt" : "-$opt")." $desc\n";
+    }
+    echo $usage."\n\n";
+    exit;
+}
+
+if(in_array("tables",array_keys($options))) {
+    echo "\n=SPECIAL TABLES===============================================\n\n";
+    echo "Tables fully backed up:\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n".
+        wordwrap(implode(", ",$straight_backup_tables));
+    echo "\n==============================================================\n\n";
+    echo "Tables ignored:\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n".
+        wordwrap(implode(", ",$ignore_tables));
+    echo "\n==============================================================\n\n";
+    echo "Tables backup by date (when --startdate & --enddate are used):\n".
+        "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n".wordwrap(implode(", ",$date_backup));
+    echo "\n\n";
+    exit;
+}
+
+$errFlag = false;
+$errMsg = "";
+foreach($reqOptions as $opt => $desc) {
+    if(!in_array($opt,array_keys($options))) {
+        if(!$errFlag) $errMsg .= "Missing required options:\n";
+        $errMsg .= "\t\t".( strlen($opt) > 1 ? "--$opt" : "-$opt" )." $desc\n";
+        $errFlag = true;
+    }
+}
+if($errFlag) {
+    echo $header;
+    echo "Please specify options:\n";
+    echo "\t\t".$argv[0]." -s 127.0.0.1:3306 --su root --sp myPassword --sdb sourceDB /\n\t\t\t-d 127.0.0.1:3306 --du root --dp myPassword --ddb destinationDB /\n\t\t\t-t PRIMARY_TABLE -w 'PRIMARY_ID = 123456'\n";
+    echo $errMsg;
+    exit;
+}
+    //Prevent accidentally overwriting production, remove this if you are sure you know what you are doing
+if(preg_match("/rds\.amazonaws\.com/",$options["d"])) {
+    echo "!!!ERROR!!!: writing to an AWS DB is not allowed!!!!!!!!!\nTERMINATING REQUEST\n";
+    exit;
+}
+echo $header;
+echo "Running Backup with Parameters:\n======================";
+foreach($options as $opt => $val) echo "$opt:($val)\n";
+
+/* ===========================================================
+ * Connection Information:
+ * ===========================================================
+ * The script connects to two databases ( a source and destination )
+ * these and the relevant database names are selected below
+ */
+echo "Connecting and selecting databases\n";
+set_time_limit(0);
+ini_set("memory_limit","500M");
+
+$date = $options["startdate"];
+$date2 = $options["enddate"];
+
+$src = mysql_pconnect($options["s"], $options["su"], $options["sp"]);
+$dest = mysql_pconnect($options["d"], $options["du"], $options["dp"]);
+
+if(!$src) die('Could not connect: ' . mysql_error());
+if(!$dest) die('Could not connect: ' . mysql_error());
+
+mysql_select_db($options["ddb"],$src);
+mysql_select_db($options["sdb"],$dest);
+
+/* ============================================================
+ * CREATE DEPENDENCIES
+ * ============================================================
+ * First, create table dependencies for the entire DB by
+ * describing each table and searching for namespace matches.
+ * i.e. APPL_APPS_ID ==> APPS_ID (Joining the APPL_APP table and the APPS_APP_STATUS table)
+ *
+ * special cases must be defined above...i.e. when a table has unlike syntax to out standard
+
+/* ===========================================================
+ * 1. Get table descriptions
+ * 2. use those descriptions in getDependencies function
+ */
+echo "Creating dependency hash arrays\n";
+
+$sql = 'SHOW TABLES';
+$results = mysql_query($sql, $src);
+$tableArray = array();
+while($row = mysql_fetch_array($results)) {
+    echo ".";
+	if(in_array($row[0], $ignore_tables)) continue;
+	$sql2 = 'DESCRIBE '.$row[0];
+	$results2 = mysql_query($sql2, $src);
+	$tableArray[$row[0]] = array();
+    while($row2 = mysql_fetch_array($results2)) {
+        echo ".";
+		$tableArray[$row[0]][$row2[0]] = $row2[1];
+	}
+}
+/*===========================================================
+ *  Build table dependencies relationally from APPL_APP,
+ *  as described above
+ */
+
+$tableDeps = getDependents("APPL_APP");
+
+/*===========================================================
+ *  Build table dependencies for special table
+ */
+foreach($special_tables as $table => $pointer) {
+    $tableDeps = getDependents($table, "", $tableDeps);
+    echo ".";
+}
+echo "\n";
+
+
+/* TURN OFF CERTAIN FLAGS
+ * Turn off Foreign Key Checks
+ * ===========================================================
+ * Turn off Foreign Key checks, so script can work in any order
+ * (without key_checks) from preventing a write
+ */
+
+echo "Turning off foreign key checks for this session\n";
+
+$turnOffC = mysql_query("SET FOREIGN_KEY_CHECKS = 0", $dest);
+
+/* Turn Off AutoIncrement:
+ * =============================================================
+ * 1. loop through all tables and turn off autoincrement for tables that have it, and
+ * 2. save those tables data, so we can turn it back on again.
+ */
+
+echo "Creating missing tables";
+$sql = "SHOW TABLES";
+$tables = mysql_query($sql, $src);
+
+$auto_increment = array();
+$createdTables = array();
+$hasDependencies = array();
+
+while($table = mysql_fetch_array($tables))
+{
+	if(in_array($table[0], $ignore_tables)) continue;
+	$sql2 = "SHOW CREATE TABLE ".$table[0];
+	$creates = mysql_query($sql2, $src);
+	$create = mysql_fetch_array($creates);
+	$createSQL = $create[1];
+	if(preg_match_all('/([\n\r][ \t]*`)(.*)(`.*auto_increment)/', $createSQL, $matches, PREG_SET_ORDER)) {
+		$auto_increment[$table[0]] = array();
+		foreach($matches as $val) {
+			$auto_increment[$table[0]][] = preg_replace('/`/', '', $val[0]);
+		}
+	}
+	$dest_sql = "SHOW TABLES WHERE Tables_in_rateGenius = '".$table[0]."'";
+	$dest_table_exists = mysql_query($dest_sql, $dest);
+	if(mysql_num_rows($dest_table_exists) == 0) {
+		$createSQL = preg_replace('/auto_increment/', '', $createSQL); //remove auto_increment
+		$createResults = mysql_query($createSQL, $dest);
+		echo ".";
+	}
+}
+echo ".";
+
+/*===============================================================
+ * Turn off auto_increment at destination
+ */
+
+echo "Altering tables to turn OFF AutoIncrement\n";
+foreach($auto_increment as $table => $column_statements)
+{
+	if(in_array($table, $ignore_tables)) continue;
+	foreach($column_statements as $column_statement) {
+		$column_statement = preg_replace('/auto_increment/', '', $column_statement);
+		$alterSQL = "ALTER TABLE $table MODIFY $column_statement";
+        $alterResults = mysql_query($alterSQL, $dest);
+        echo ".";
+	}
+}
+echo "\n";
+
+/* BACKUP SOME TABLES COMPLETELY
+ * ================================================================
+ * Some tables have more-or-less static data, that does not change
+ * on a daily basis, we can back these tables up wholesale.
+ */
+
+if(!in_array('skip',array_keys($options))) { // Optionally skip this step
+    echo "Fully backing some tables:";
+    foreach($straight_backup_tables as $table) {
+        echo ".";
+        createInsertLeft("", $table); //insert all records from source to destination
+    }
+    echo "\n";
+}
+
+/* BACKUP BY-DATE TABLES THAT ARE SPECIFIED BY DATE
+ * ==================================================================
+ * Get swath of Applications by date range
+ */
+
+if(in_array('startdate',array_keys($options)) && in_array('enddate',array_keys($options))) {
+    echo "Building Date Swaths";
+    foreach($date_backup as $table_name => $date_column) {
+        $addSQL = "$date_column >= '".$date."' AND $date_column < '".$date2."'";
+        recursiveInsert('', $table_name, '', array(), $addSQL, "left", array());
+    }
+    echo "\n";
+}
+else if(in_array("t",array_keys($options))) {
+    echo "Building Data by Table";
+    recursiveInsert('', $options["t"], '', array(), $options["w"], "left", array());
+    echo "\n";
+}
+else {
+    echo "You must provide either a table [-t table_name] or --startdate and --enddate\n";
+}
+
+/* RESTORE AUTO INCREMENTS
+ * ===================================================================
+ * Change back to auto_increment
+ */
+
+echo "Altering tables to turn back ON AutoIncrement\n";
+foreach($auto_increment as $table => $column_statements)
+{
+	foreach($column_statements as $column_statement) {
+		$alterSQL = "ALTER TABLE $table MODIFY $column_statement";
+		$alterResults = mysql_query($alterSQL, $dest);
+		echo ".";
+	}
+}
+echo "\n";
+
+/* DONE
+ * ===================================================================
+ * This is the end of script execution.
+ * NOTE: Everything below is function definition.
+ * ===================================================================
+ * ===================================================================
+ * ===================================================================
+ * ===================================================================
+ * -------------------------------------------------------------------
+ */
+
+
+/* ===================================================================
+ * getDependents($prime_table_name, $parents, $result)
+ * ===================================================================
+ *
+ * ARGUMENTS
+ * -------------------------------------------------------------------
+ * $prime_table_name -  the starting table name (i.e. APPL_APP)
+ *                      this can really be any table.
+ * $parents - growing array of parents ...this prevents recursions
+ *                                        from rebuilding the same
+ *                                        dependency.
+ * $result - growing dependencies hash ...Recursively added to...
+ *
+ * FUNCTIONALITY
+ * -------------------------------------------------------------------
+ * Recursively build Table Dependency Hash
+ */
+
+function getDependents($prime_table_name, $parents=array(), $result=array()) {
+    echo ".";
+	global $tableArray;
+	global $tablesIgnore;
+
+	if(!in_array($prime_table_name, array_keys($result)) || !is_array($result[$prime_table_name])) {
+		$result[$prime_table_name] = array();
+		$result[$prime_table_name]['left'] = array();
+		$result[$prime_table_name]['right'] = array();
+	}
+
+	$parents[] = $prime_table_name;
+	$first_underscore = stripos($prime_table_name, "_");
+	$prime_table_prefix = substr($prime_table_name, 0, $first_underscore);
+
+	$prime_table_columns = $tableArray[$prime_table_name];
+
+	foreach($tableArray as $table => $columns) {
+		if($table == $prime_table_name) continue;
+		$first_underscore2 = stripos($table, "_");
+		$table_prefix = substr($table, 0, $first_underscore2);
+		if($table_prefix == "") continue;
+		foreach($prime_table_columns as $prime_col_name => $prime_col_type) {
+			if(preg_match('/_'.$table_prefix.'_/', $prime_col_name) && preg_match('/_ID/', $prime_col_name)) {
+				$result[$prime_table_name]['right'][$prime_col_name] = $table;
+				if(!in_array($table, array_keys($result)) || !is_array($result[$table])) $result = getDependents($table, $parents, $result);
+			}
+		}
+		if(in_array($prime_table_name, array_keys($tablesIgnore))) {
+			if(!in_array($table, $tablesIgnore[$prime_table_name])) continue;
+		}
+		foreach($columns as $col_name => $col_type) {
+			if(preg_match('/_'.$prime_table_prefix.'_/', $col_name) && preg_match('/_ID/', $col_name)) {
+				$result[$prime_table_name]['left'][$col_name] = $table;
+				if(!in_array($table, array_keys($result)) || !is_array($result[$table])) $result = getDependents($table, $parents, $result);
+			}
+		}
+	}
+	return $result;
+}
+
+/* ===================================================================
+ * function recursiveInsert($parent, $child, $ref, $keys, $where, $side, $ancestors)
+ * ===================================================================
+ *
+ * ARGUMENTS
+ * -------------------------------------------------------------------
+ * $parent - parent table
+ * $child - child table (could be child, peer, or under)
+ * $ref - referencing table column (for relational link) [i.e. APPL_APP]
+ * $keys - parent reference keys [i.e. APPL_IDs: 10001223,104898328]
+ * $where - limiting where clause for child table [i.e. where APPL_CREATE_DT > '2011-12-01']
+ * $side - direction to joint :
+ *          'left' = recurse parent-to-child -or- directly child,
+ *          'right' = child-to-parent recurse up the ladder,
+ *          'under' special cases with double relationality [table_name, ref_id]
+ * $ancestors - grandparents, great-grandparents....etc... to prevent infinite recursion loop
+ *
+ */
+
+function recursiveInsert($parent = "", $child = "", $ref = "", $keys = array(), $where = "", $side = "left", $ancestors = array())
+{
+    echo ".";
+	global $tableDeps;
+	global $special_tables;
+	global $anc_exceptions;
+
+	//echo $parent."=>".$child."\n";
+	$ancestors[] = $parent;
+
+	//print_r($ancestors);
+
+	$IDs = array();
+
+	if($side == "left") {
+		//echo "LEFT: $parent => $child, $where\n";
+		$IDs = createInsertLeft($parent, $child, $ref, $keys, $where);
+	}
+	else if($side == "right") {
+		//echo "RIGHT: $parent => $child, $where\n";
+		$peer = $child;
+		$IDs = createInsertRight($parent, $peer, $ref ,$keys, $where);
+	}
+	else if($side = "under") {
+		//echo "UNDER: $parent => $child, $where\n";
+		$c_p_table = $where;
+		$IDs = createInsertUnder($parent, $child, $ref, $keys, $c_p_table);
+	}
+	else return false;
+	if(count($IDs) > 0) {
+		foreach($tableDeps[$child]['left'] as $c_ref => $grandchild)
+		{
+			if(!in_array($grandchild, $ancestors) || (in_array($grandchild, $anc_exceptions) && (count(array_intersect($keys, $IDs)) == 0))) {
+				recursiveInsert($child, $grandchild, $c_ref, $IDs, "", "left", $ancestors);
+			}
+		}
+		foreach($tableDeps[$child]['right'] as $c_ref => $peer)
+		{
+			if(!in_array($peer, $ancestors) || (in_array($peer, $anc_exceptions) && (count(array_intersect($keys, $IDs)) == 0))) {
+				recursiveInsert($child, $peer, $c_ref, $IDs, "", "right", $ancestors);
+			}
+		}
+		foreach($special_tables as $table => $pointer)
+		{
+			if(!in_array($table, $ancestors)) {
+				recursiveInsert($child, $table, $pointer[1], $IDs, $pointer[0], "under", $ancestors);
+			}
+		}
+	}
+	return true;
+}
+
+function createInsertUnder($table_p = "", $table_link = "", $table_c_p_ref = "", $IDs = array(), $table_c_p_table = "")
+{
+    echo ".";
+	global $src;
+	global $dest;
+	global $tableArray;
+
+	$first_underscore_p = stripos($table_p, "_");
+	$table_prefix_p = substr($table_p, 0, $first_underscore_p);
+
+	$first_underscore_link = stripos($table_link, "_");
+	$table_prefix_link = substr($table_link, 0, $first_underscore_link);
+
+	$sql = "SELECT * FROM $table_link WHERE $table_c_p_ref IN (";
+	foreach($IDs as $index => $ID) {
+		$sql .= $ID;
+		if(count($IDs) != ($index+1)) $sql .= ",";
+	}
+	$sql .= ") AND ($table_c_p_table = '$table_p'";
+	$sql .= ")";
+
+	$results = mysql_query($sql, $src);
+
+	$column_flag = true;
+	$columns = "";
+	$values = array();
+	$index = 0;
+
+	$firstColumn = "";
+
+	$update_columns = array();
+
+	$theseIDs = array();
+	while($row = mysql_fetch_assoc($results))
+	{
+		$row_flag = false;
+		if($column_flag) $columns .= "(";
+		$values[$index] = "(";
+		foreach($row as $column => $value) {
+			if($row_flag) {
+				if($column_flag) {
+					$columns .= ",";
+				}
+				$values[$index] .= ",";
+			}
+
+			if($column_flag) {
+				$update_columns[] = $column;
+			}
+
+			$row_flag = true;
+			if($column_flag) $columns .= $column;
+
+			if(preg_match('/int/', $tableArray[$table_link][$column])) $values[$index] .= intval(mysql_real_escape_string($value));
+			else if(preg_match('/decimal/', $tableArray[$table_link][$column])) $values[$index] .= floatval(mysql_real_escape_string($value));
+			else if(preg_match('/char/', $tableArray[$table_link][$column])) $values[$index] .= "'".mysql_real_escape_string($value)."'";
+			else if(preg_match('/datetime/', $tableArray[$table_link][$column])) $values[$index] .= "'".mysql_real_escape_string($value)."'";
+			else if(preg_match('/text/', $tableArray[$table_link][$column])) $values[$index] .= "'".mysql_real_escape_string($value)."'";
+			else if(preg_match('/blob/', $tableArray[$table_link][$column])) $values[$index] .= "'".mysql_real_escape_string($value)."'";
+			else $values[$index] .= "'".mysql_real_escape_string($value)."'";
+		}
+		if($column_flag) {
+			$columns .= ")";
+		}
+		$values[$index] .= ")";
+		$column_flag = false;
+		$theseIDs[] = $row[$table_prefix_link."_ID"];
+		$index++;
+	}
+
+	if($index > 0) {
+		$insertSQL = "REPLACE INTO $table_link $columns VALUES ";
+		foreach($values as $index => $value)
+		{
+			if($index > 0) $insertSQL .= ",";
+			if(!$value) $insertSQL .= "NULL";
+			else $insertSQL .= $value;
+        }
+
+		$result = mysql_query($insertSQL, $dest);
+		if(!$result) {
+			die("Could not INSERT ".mysql_error($dest));
+		}
+	}
+	return $theseIDs;
+}
+
+function createInsertLeft($table_p = "", $table_c = "", $table_p_c_ref = "", $IDs = array(), $addWhere = "")
+{
+    echo ".";
+	global $src;
+	global $dest;
+    global $tableArray;
+
+	$first_underscore_p = stripos($table_p, "_");
+	$table_prefix_p = substr($table_p, 0, $first_underscore_p);
+
+	$first_underscore_c = stripos($table_c, "_");
+	$table_prefix_c = substr($table_c, 0, $first_underscore_c);
+
+	$sql = "SELECT * FROM ".$table_c;
+	if(($table_p != "") || ($addWhere != "")) $sql .= " WHERE ";
+	if($table_p != "")
+	{
+		$sql .= $table_p_c_ref." IN (";
+		foreach($IDs as $index => $ID) {
+			$sql .= $ID;
+			if(count($IDs) != ($index+1)) $sql .= ",";
+		}
+		$sql .= ")";
+	}
+	if(($addWhere != "") && ($table_p != "")) $sql .= " AND ";
+	if($addWhere != "") $sql .= $addWhere;
+
+	$results = mysql_query($sql, $src);
+
+	$column_flag = true;
+	$columns = "";
+	$values = array();
+	$index = 0;
+
+	$firstColumn = "";
+
+	$update_columns = array();
+
+	$theseIDs = array();
+	while($row = mysql_fetch_assoc($results))
+	{
+		$row_flag = false;
+		if($column_flag) $columns .= "(";
+		$values[$index] = "(";
+		foreach($row as $column => $value) {
+			if($row_flag) {
+				if($column_flag) {
+					$columns .= ",";
+				}
+				$values[$index] .= ",";
+			}
+			if($column_flag) {
+				$update_columns[] = $column;
+			}
+			$row_flag = true;
+			if($column_flag) $columns .= $column;
+			if(preg_match('/int/', $tableArray[$table_c][$column])) $values[$index] .= intval(mysql_real_escape_string($value));
+			else if(preg_match('/decimal/', $tableArray[$table_c][$column])) $values[$index] .= floatval(mysql_real_escape_string($value));
+			else if(preg_match('/char/', $tableArray[$table_c][$column])) $values[$index] .= "'".mysql_real_escape_string($value)."'";
+			else if(preg_match('/datetime/', $tableArray[$table_c][$column])) $values[$index] .= "'".mysql_real_escape_string($value)."'";
+			else if(preg_match('/text/', $tableArray[$table_c][$column])) $values[$index] .= "'".mysql_real_escape_string($value)."'";
+			else if(preg_match('/blob/', $tableArray[$table_c][$column])) $values[$index] .= "'".mysql_real_escape_string($value)."'";
+			else $values[$index] .= "'".mysql_real_escape_string($value)."'";
+		}
+		if($column_flag) {
+			$columns .= ")";
+		}
+		$values[$index] .= ")";
+		$column_flag = false;
+		$theseIDs[] = $row[$table_prefix_c."_ID"];
+		$index++;
+	}
+
+	if($index > 0) {
+		$insertSQL = "REPLACE INTO ".$table_c." ".$columns." VALUES ";
+		foreach($values as $index => $value)
+		{
+			if($index > 0) $insertSQL .= ",";
+			if(!$value) $insertSQL .= "NULL";
+			else $insertSQL .= $value;
+        }
+
+		$result = mysql_query($insertSQL, $dest);
+		if(!$result) {
+			die("Could not INSERT ".mysql_error($dest));
+		}
+	}
+	return $theseIDs;
+}
+
+function createInsertRight($table_p = "", $table_peer = "", $table_p_peer_ref, $IDs = array(), $addWhere = "")
+{
+    echo ".";
+	global $src;
+	global $dest;
+    global $tableArray;
+
+	$first_underscore_p = stripos($table_p, "_");
+	$table_prefix_p = substr($table_p, 0, $first_underscore_p);
+	$table_id_p = $table_prefix_p."_ID";
+
+	$first_underscore_peer = stripos($table_peer, "_");
+	$table_prefix_peer = substr($table_peer, 0, $first_underscore_peer);
+	$table_id_peer = $table_prefix_peer."_ID";
+
+	$sql = "SELECT $table_peer.* FROM $table_peer LEFT OUTER JOIN $table_p ON ($table_p_peer_ref = $table_id_peer) ";
+	$sql .= " WHERE $table_p_peer_ref IS NOT NULL AND $table_id_p IN (";
+
+	foreach($IDs as $index => $ID) {
+		$sql .= $ID;
+		if(count($IDs) != ($index+1)) $sql .= ",";
+	}
+	$sql .= ")";
+	if($addWhere != "") $sql .= " AND ".$addWhere;
+
+	$results = mysql_query($sql, $src);
+
+	$column_flag = true;
+	$columns = "";
+	$values = array();
+	$index = 0;
+
+	$firstColumn = "";
+
+	$update_columns = array();
+
+	$theseIDs = array();
+	while($row = mysql_fetch_assoc($results))
+	{
+		$row_flag = false;
+		if($column_flag) $columns .= "(";
+		$values[$index] = "(";
+		foreach($row as $column => $value) {
+			if($row_flag) {
+				if($column_flag) $columns .= ",";
+				$values[$index] .= ",";
+			}
+			if($column_flag) {
+				$update_columns[] = $column;
+			}
+			$row_flag = true;
+			if($column_flag) $columns .= $column;
+			if(preg_match('/int/', $tableArray[$table_peer][$column])) $values[$index] .= intval(mysql_real_escape_string($value));
+			else if(preg_match('/decimal/', $tableArray[$table_peer][$column])) $values[$index] .= floatval(mysql_real_escape_string($value));
+			else if(preg_match('/char/', $tableArray[$table_peer][$column])) $values[$index] .= "'".mysql_real_escape_string($value)."'";
+			else if(preg_match('/datetime/', $tableArray[$table_peer][$column])) $values[$index] .= "'".mysql_real_escape_string($value)."'";
+			else if(preg_match('/text/', $tableArray[$table_peer][$column])) $values[$index] .= "'".mysql_real_escape_string($value)."'";
+			else if(preg_match('/blob/', $tableArray[$table_peer][$column])) $values[$index] .= "'".mysql_real_escape_string($value)."'";
+			else $values[$index] .= "'".mysql_real_escape_string($value)."'";;
+
+		}
+		if($column_flag) $columns .= ")";
+		$values[$index] .= ")";
+		$column_flag = false;
+		$theseIDs[] = $row[$table_prefix_peer."_ID"];
+		$index++;
+	}
+	if($index > 0) {
+		$insertSQL = "REPLACE INTO ".$table_peer." ".$columns." VALUES ";
+		foreach($values as $index => $value)
+		{
+			if($index > 0) $insertSQL .= ",";
+			if(!$value) $insertSQL .= "NULL";
+			else $insertSQL .= $value;
+		}
+
+		$result = mysql_query($insertSQL, $dest);
+		if(!$result) {
+			die("Could not INSERT ".mysql_error($dest));
+		}
+	}
+	return $theseIDs;
+}
+
+function make_separator($string, $width, $char) {
+	$ret = "";
+	$num_char_left = $width - strlen($string);
+	while($num_char_left--) $ret .= $char;
+	$ret .= "\n";
+	while($width--) $ret .= $char;
+	return $ret."\n";
+}
+
+function strposReverse( $str, $search, $pos ){
+	$str = strrev($str);
+	$search = strrev($search);
+	$pos = (strlen($str) - 1) - $pos;
+
+	$posRev = strpos( $str, $search, $pos );
+	return (strlen($str) - 1) - $posRev - (strlen($search) - 1);
+}
+
+?>
+
